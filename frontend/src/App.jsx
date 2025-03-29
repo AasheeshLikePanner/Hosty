@@ -35,6 +35,9 @@ function App() {
   return (
     <>
       {/* <Host receiver={isReceiver}> */}
+        <div className="absolute top-8 left-8 font-bold text-black text-xl z-10">
+          HOSTY
+        </div>
         {!isReceiver ? <SenderPage/> : <ReciverPage/>}
         <BottomSection />
       {/* </Host> */}

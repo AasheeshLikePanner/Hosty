@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import { FileText, Image, Video, FileCode, Download, Check, File } from 'lucide-react';
+import { gsap } from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+
+// Register GSAP plugins
+gsap.registerPlugin(ScrollTrigger);
 
 const WebRTCReceiver = () => {
   const [fileMetadata, setFileMetadata] = useState(null);
@@ -10,13 +15,18 @@ const WebRTCReceiver = () => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingData, setStreamingData] = useState(null);
   const [receivedBytes, setReceivedBytes] = useState(0);
-  // Add debug state to track issues
   const [debugInfo, setDebugInfo] = useState({
     chunkCount: 0,
     lastChunkSize: 0,
     totalCalculatedSize: 0,
     progressCalculation: "0%"
   });
+
+  // Refs for elements to animate
+  const containerRef = useRef(null);
+  const headerRef = useRef(null);
+  const progressRef = useRef(null);
+  const previewRef = useRef(null);
 
   const socketRef = useRef(null);
   const peerConnectionRef = useRef(null);
@@ -25,9 +35,11 @@ const WebRTCReceiver = () => {
   const mediaElementRef = useRef(null);
   const totalBytesRef = useRef(0);
   const fileMetadataRef = useRef(null);
+  const mediaSourceRef = useRef(null);
+  const sourceBufferRef = useRef(null);
+  const mediaQueueRef = useRef([]);
 
-
-  const SIGNALING_SERVER = 'http://localhost:3000'; // Update with your signaling server URL
+  const SIGNALING_SERVER = 'http://localhost:3000';
 
   const FILE_ICONS = {
     'application/pdf': FileText,
@@ -41,14 +53,67 @@ const WebRTCReceiver = () => {
     'application/msword': FileText
   };
 
-  // Important: Add this effect to manually recalculate progress whenever receivedBytes changes
+  // Initialize GSAP animations
+  useEffect(() => {
+    if (containerRef.current) {
+      // Fade in the container
+      gsap.from(containerRef.current, {
+        opacity: 0,
+        y: 20,
+        duration: 0.8,
+        ease: "power2.out"
+      });
+
+      // Create scroll animations
+      ScrollTrigger.batch(".animate-on-scroll", {
+        onEnter: batch => gsap.to(batch, {
+          opacity: 1,
+          y: 0,
+          stagger: 0.15,
+          duration: 0.8,
+          ease: "power2.out"
+        }),
+        start: "top 85%",
+        once: true
+      });
+    }
+  }, []);
+
+  // Animate elements when file metadata changes
+  useEffect(() => {
+    if (fileMetadata && headerRef.current) {
+      gsap.from(headerRef.current, {
+        y: -20,
+        opacity: 0,
+        duration: 0.5,
+        ease: "back.out(1.7)"
+      });
+    }
+  }, [fileMetadata]);
+
+  // Animation for progress updates
+  useEffect(() => {
+    if (progressRef.current && transferProgress > 0) {
+      gsap.to(progressRef.current.querySelector(".progress-bar"), {
+        width: `${transferProgress}%`,
+        duration: 0.3,
+        ease: "power1.out"
+      });
+      
+      gsap.from(progressRef.current.querySelector(".progress-text"), {
+        scale: 1.1,
+        duration: 0.2,
+        ease: "power1.out"
+      });
+    }
+  }, [transferProgress]);
+
   useEffect(() => {
     if (fileMetadata && fileMetadata.size > 0 && receivedBytes > 0) {
       const calculatedProgress = Math.min(100, Math.round((receivedBytes / fileMetadata.size) * 100));
       console.log(`Effect triggered: Recalculating progress - ${calculatedProgress}%`);
       setTransferProgress(calculatedProgress);
       fileMetadataRef.current = fileMetadata;
-      // Update debug info
       setDebugInfo(prev => ({
         ...prev,
         totalCalculatedSize: receivedBytes,
@@ -58,10 +123,8 @@ const WebRTCReceiver = () => {
   }, [receivedBytes, fileMetadata]);
 
   useEffect(() => {
-    // Initialize connection
     setupWebRTCConnection();
 
-    // Cleanup on unmount
     return () => {
       if (peerConnectionRef.current) {
         peerConnectionRef.current.close();
@@ -75,10 +138,22 @@ const WebRTCReceiver = () => {
       if (fileData) {
         URL.revokeObjectURL(fileData);
       }
+      // Cleanup Media Source if it exists
+      if (mediaSourceRef.current && sourceBufferRef.current) {
+        try {
+          if (sourceBufferRef.current.updating) {
+            sourceBufferRef.current.abort();
+          }
+          if (mediaSourceRef.current.readyState === 'open') {
+            mediaSourceRef.current.endOfStream();
+          }
+        } catch (e) {
+          console.error('Error during MSE cleanup:', e);
+        }
+      }
     };
   }, []);
 
-  // Clean up URLs when component unmounts or when new files are loaded
   useEffect(() => {
     return () => {
       if (streamingData) {
@@ -87,15 +162,72 @@ const WebRTCReceiver = () => {
     };
   }, [streamingData]);
 
+  // Initialize MediaSource for streaming video
+  const setupMediaSourceExtensions = (fileType) => {
+    if ('MediaSource' in window) {
+      try {
+        // Common video codecs
+        const mimeCodecs = {
+          'video/mp4': 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+          'video/webm': 'video/webm; codecs="vp8, vorbis"',
+          'video/x-matroska': 'video/webm; codecs="vp8, vorbis"', // For MKV files, try webm codec
+        };
+        
+        const mimeType = mimeCodecs[fileType] || fileType;
+        
+        if (!MediaSource.isTypeSupported(mimeType)) {
+          console.warn(`Media type ${mimeType} is not supported for MSE streaming`);
+          return false;
+        }
+        
+        const mediaSource = new MediaSource();
+        mediaSourceRef.current = mediaSource;
+        
+        mediaSource.addEventListener('sourceopen', () => {
+          console.log('MediaSource opened');
+          try {
+            sourceBufferRef.current = mediaSource.addSourceBuffer(mimeType);
+            sourceBufferRef.current.mode = 'segments';
+            sourceBufferRef.current.addEventListener('updateend', processMediaQueue);
+            
+            // Process any queued media data
+            processMediaQueue();
+          } catch (e) {
+            console.error('Error setting up SourceBuffer:', e);
+            return false;
+          }
+        });
+        
+        return URL.createObjectURL(mediaSource);
+      } catch (e) {
+        console.error('Error setting up MediaSource:', e);
+        return false;
+      }
+    }
+    
+    console.warn('MediaSource Extensions not supported in this browser');
+    return false;
+  };
+
+  const processMediaQueue = () => {
+    if (mediaQueueRef.current.length > 0 && 
+        sourceBufferRef.current && 
+        !sourceBufferRef.current.updating) {
+      const chunk = mediaQueueRef.current.shift();
+      try {
+        sourceBufferRef.current.appendBuffer(chunk);
+      } catch (e) {
+        console.error('Error appending buffer:', e);
+      }
+    }
+  };
+
   const setupWebRTCConnection = () => {
-    // Create socket connection
     const socket = io(SIGNALING_SERVER);
     socketRef.current = socket;
 
-    // Get session ID from URL
     const sessionId = window.location.pathname.split('/').pop() || '';
 
-    // WebRTC configuration
     const configuration = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -103,11 +235,9 @@ const WebRTCReceiver = () => {
       ]
     };
 
-    // Create peer connection
     const peerConnection = new RTCPeerConnection(configuration);
     peerConnectionRef.current = peerConnection;
 
-    // Create the data channel with the same parameters as the sender
     const dataChannel = peerConnection.createDataChannel('fileTransfer', {
       negotiated: true,
       id: 0
@@ -118,6 +248,15 @@ const WebRTCReceiver = () => {
     dataChannel.onopen = () => {
       console.log('Data channel opened on receiver');
       setConnectionStatus('connected');
+      
+      // Animate connection status change
+      gsap.to('.connection-status', {
+        backgroundColor: '#22c55e',
+        scale: 1.1,
+        duration: 0.5,
+        yoyo: true,
+        repeat: 1
+      });
     };
 
     dataChannel.onclose = () => {
@@ -133,14 +272,11 @@ const WebRTCReceiver = () => {
       handleReceivedMessage(event);
     };
 
-    // Join session
     socket.emit('join-session', sessionId);
 
-    // Handle ICE candidates
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
         console.log('New ICE candidate:', event.candidate);
-        
         socket.emit('candidate', { 
           candidate: event.candidate, 
           sessionId 
@@ -148,12 +284,10 @@ const WebRTCReceiver = () => {
       }
     };
 
-    // Handle connection state changes
     peerConnection.oniceconnectionstatechange = () => {
       console.log('ICE connection state:', peerConnection.iceConnectionState);
     };
 
-    // Handle signaling events
     socket.on('offer', async ({ offer }) => {
       try {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
@@ -214,7 +348,6 @@ const WebRTCReceiver = () => {
     setReceivedBytes(0);
     totalBytesRef.current = metadata.size;
     
-    // Reset debug info
     setDebugInfo({
       chunkCount: 0,
       lastChunkSize: 0,
@@ -222,22 +355,45 @@ const WebRTCReceiver = () => {
       progressCalculation: "0%"
     });
     
-    // For streamable content, prepare for streaming
-    if (isStreamableType(metadata.type)) {
+    // Special handling for video streaming
+    if (metadata.type.startsWith('video/') || metadata.type === 'video/x-matroska') {
+      setIsStreaming(true);
+      
+      // Set up MediaSource for video streaming
+      const mseUrl = setupMediaSourceExtensions(metadata.type);
+      if (mseUrl) {
+        setStreamingData(mseUrl);
+      } else {
+        // Fallback to normal streaming if MSE setup fails
+        setIsStreaming(true);
+      }
+    }
+    else if (isStreamableType(metadata.type)) {
       setIsStreaming(true);
     } else {
       setIsStreaming(false);
     }
+    
+    // Animate the appearance of file info
+    gsap.from(".file-info", {
+      opacity: 0,
+      x: -20,
+      stagger: 0.1,
+      delay: 0.3,
+      duration: 0.6,
+      ease: "power2.out"
+    });
   };
 
   const isStreamableType = (fileType) => {
     return fileType.startsWith('image/') || 
            fileType.startsWith('video/') || 
-           fileType.startsWith('audio/');
+           fileType.startsWith('audio/') ||
+           fileType === 'application/pdf' ||
+           fileType === 'video/x-matroska';
   };
 
   const handleFileChunk = (chunkData) => {
-    // Ensure chunkData is an array
     if (!Array.isArray(chunkData)) {
       console.error('Expected chunk data to be an array, received:', typeof chunkData);
       return;
@@ -246,17 +402,14 @@ const WebRTCReceiver = () => {
     const chunk = new Uint8Array(chunkData);
     receivedChunksRef.current.push(chunk);
 
-    // Update debug info
     const newChunkCount = debugInfo.chunkCount + 1;
     
-    // Update debug state
     setDebugInfo(prev => ({
       ...prev,
-      chunkCount: receivedChunksRef.current.length, // Use actual count
+      chunkCount: receivedChunksRef.current.length,
       lastChunkSize: chunk.length
     }));
 
-    // Calculate total received bytes
     let totalReceivedBytes = 0;
     for (const chunk of receivedChunksRef.current) {
       totalReceivedBytes += chunk.length;
@@ -264,24 +417,64 @@ const WebRTCReceiver = () => {
     
     console.log(`Chunk #${newChunkCount} received, size: ${chunk.length}, total received: ${totalReceivedBytes} bytes`);
     
-    // Update received bytes state - using the direct calculated value
     setReceivedBytes(totalReceivedBytes);
     
-    // Calculate and log progress
     if (fileMetadata && fileMetadata.size > 0) {
       const progress = Math.min(100, Math.round((totalReceivedBytes / fileMetadata.size) * 100));
       console.log(`Calculated progress: ${progress}%, Received: ${totalReceivedBytes}/${fileMetadata.size} bytes`);
       
-      // Set progress directly here
       setTransferProgress(progress);
     }
 
-    // If streaming and we have enough data to show a preview
-    if (isStreaming && fileMetadata && totalReceivedBytes > 0) {
-      // For images, wait until we have at least 10% or 50KB of data to show preview
-      const minBytesForPreview = Math.min(fileMetadata.size * 0.1, 50000);
-      if (totalReceivedBytes >= minBytesForPreview) {
-        updateStreamPreview();
+    // Handle MediaSource streaming for video files
+    if (isStreaming && fileMetadata && sourceBufferRef.current) {
+      if (fileMetadata.type.startsWith('video/') || fileMetadata.type === 'video/x-matroska') {
+        try {
+          // Queue this chunk for MediaSource processing
+          mediaQueueRef.current.push(chunk.buffer);
+          
+          // Process the queue if sourceBuffer is not currently updating
+          if (!sourceBufferRef.current.updating) {
+            processMediaQueue();
+          }
+          
+          // Try to start playing as soon as we have some data
+          if (mediaElementRef.current && receivedChunksRef.current.length >= 3) {
+            mediaElementRef.current.play().catch(e => console.warn('Auto-play prevented:', e));
+          }
+          
+          return; // Skip regular streaming updates for video when using MSE
+        } catch (e) {
+          console.error('Error in MSE handling:', e);
+          // Fall back to regular streaming if MSE fails
+        }
+      }
+      
+      // For non-video or fallback handling
+      if (isStreaming && fileMetadata) {
+        // For audio/video, update preview more frequently
+        if (fileMetadata.type.startsWith('audio/') || 
+            fileMetadata.type.startsWith('video/') || 
+            fileMetadata.type === 'video/x-matroska') {
+          // Update every 500KB or on first chunk
+          if (totalReceivedBytes % 500000 < chunk.length || totalReceivedBytes === chunk.length) {
+            updateStreamPreview();
+          }
+        } 
+        // For images, wait until we have a bit more data
+        else if (fileMetadata.type.startsWith('image/')) {
+          const minBytesForPreview = Math.min(fileMetadata.size * 0.1, 50000);
+          if (totalReceivedBytes >= minBytesForPreview) {
+            updateStreamPreview();
+          }
+        }
+        // For PDFs, update frequently
+        else if (fileMetadata.type === 'application/pdf') {
+          const updateInterval = Math.min(fileMetadata.size * 0.05, 100000);
+          if (totalReceivedBytes % updateInterval < chunk.length || totalReceivedBytes === chunk.length) {
+            updateStreamPreview();
+          }
+        }
       }
     }
   };
@@ -290,16 +483,25 @@ const WebRTCReceiver = () => {
     console.log('Updating stream preview');
     
     try {
-      // Create a blob from the chunks we have so far
       const blob = new Blob(receivedChunksRef.current, { type: fileMetadata.type });
       
-      // Revoke previous URL if it exists
       if (streamingData) {
         URL.revokeObjectURL(streamingData);
       }
       
       const url = URL.createObjectURL(blob);
       setStreamingData(url);
+      
+      // Pulse animation on preview update
+      if (previewRef.current) {
+        gsap.to(previewRef.current, {
+          boxShadow: "0 0 15px rgba(59, 130, 246, 0.5)",
+          duration: 0.3,
+          yoyo: true,
+          repeat: 1
+        });
+      }
+      
       console.log('Stream preview updated, blob size:', blob.size, 'Current progress:', transferProgress);
     } catch (error) {
       console.error('Error updating stream preview:', error);
@@ -310,45 +512,58 @@ const WebRTCReceiver = () => {
     console.log('Finalizing file transfer');
     if (!fileMetadataRef.current) {
       console.error('No file metadata available for finalization'); 
-      return;}
-    const totalSize = receivedChunksRef.current.reduce((sum, chunk) => sum + chunk.length, 0);
-    console.log('Total size calculated:', totalSize);
+      return;
+    }
+    
     try {
       console.log('Received chunks:', receivedChunksRef.current.length);
       
-      // Calculate total size again to verify
       let totalSize = 0;
       for (const chunk of receivedChunksRef.current) {
         totalSize += chunk.length;
       }
-      console.log(`Total calculated size: ${totalSize}, Expected file size: ${fileMetadataRef.size}`);
+      console.log(`Total calculated size: ${totalSize}, Expected file size: ${fileMetadataRef.current.size}`);
       
-      const receivedBlob = new Blob(receivedChunksRef.current, { type: fileMetadataRef.type });
-      console.log('Created final blob, actual size:', receivedBlob.size, 'Expected:', fileMetadataRef.size);
+      const receivedBlob = new Blob(receivedChunksRef.current, { type: fileMetadataRef.current.type });
+      console.log('Created final blob, actual size:', receivedBlob.size, 'Expected:', fileMetadataRef.current.size);
       
-      // Force update received bytes with the correct blob size
       setReceivedBytes(receivedBlob.size);
-      
-      // Force 100% progress - important!
       setTransferProgress(100);
       
-      // Log the current state for debugging
       console.log('Current state before finalizing:', {
         transferProgress,
         receivedBytes,
-        fileMetadataSize: fileMetadataRef.size
+        fileMetadataSize: fileMetadataRef.current.size
       });
       
-      // Create the URL for the final file
+      // If using MediaSource, we need to indicate we're done
+      if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
+        try {
+          mediaSourceRef.current.endOfStream();
+        } catch (e) {
+          console.error('Error ending media stream:', e);
+        }
+      }
+      
       const dataUrl = URL.createObjectURL(receivedBlob);
-      
-      // Set the file data - do this last
       setFileData(dataUrl);
-      
-      // End streaming mode
       setIsStreaming(false);
       
-      // Verify and force 100% again
+      // Celebration animation
+      gsap.to(containerRef.current, {
+        keyframes: [
+          { scale: 1.02, duration: 0.2 },
+          { scale: 1, duration: 0.2 }
+        ]
+      });
+      
+      gsap.from(".download-button", {
+        opacity: 0,
+        y: 20,
+        duration: 0.6,
+        ease: "back.out(1.7)"
+      });
+      
       setTimeout(() => {
         console.log('Verifying progress after finalization');
         setTransferProgress(100);
@@ -367,6 +582,14 @@ const WebRTCReceiver = () => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    
+    // Download animation
+    gsap.to(".download-button", {
+      scale: 0.95,
+      duration: 0.1,
+      yoyo: true,
+      repeat: 1
+    });
   };
 
   const getFileIcon = () => {
@@ -387,8 +610,8 @@ const WebRTCReceiver = () => {
     const previewUrl = fileData || streamingData;
 
     return (
-      <div className="mt-8 space-y-4">
-        <div className="flex items-center space-x-4">
+      <div className="mt-8 space-y-4 animate-on-scroll" ref={previewRef}>
+        <div className="flex items-center space-x-4 file-info">
           <FileIcon className="w-12 h-12 text-gray-700" />
           <div>
             <p className="text-xl font-light">{fileMetadata.name}</p>
@@ -399,28 +622,35 @@ const WebRTCReceiver = () => {
           </div>
         </div>
 
-        <div className="w-full bg-gray-200 rounded-full h-2.5 mb-2">
+        <div className="w-full bg-gray-200 rounded-full h-2.5 mb-2" ref={progressRef}>
           <div 
-            className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" 
+            className="bg-blue-600 h-2.5 rounded-full transition-all duration-300 progress-bar" 
             style={{ width: `${transferProgress}%` }}
           ></div>
-          <p className="text-center text-sm text-gray-600 mt-1">
+          <p className="text-center text-sm text-gray-600 mt-1 progress-text">
             {transferProgress}% {isStreaming && transferProgress < 100 ? "(Streaming)" : ""}
           </p>
         </div>
 
-        {/* Debug information section for troubleshooting */}
+        {/* Collapsible debug section */}
         <div className="bg-gray-100 p-4 my-2 rounded text-xs font-mono">
           <p>Debug Info:</p>
-          <ul>
-            <li>Chunks Received: {debugInfo.chunkCount}</li>
-            <li>Last Chunk Size: {debugInfo.lastChunkSize} bytes</li>
-            <li>Total Calculated Size: {debugInfo.totalCalculatedSize} bytes</li>
-            <li>Progress Calculation: {debugInfo.progressCalculation}</li>
-            <li>Current Progress State: {transferProgress}%</li>
-            <li>Received Bytes State: {receivedBytes} bytes</li>
-            <li>Expected Size: {fileMetadata.size} bytes</li>
-          </ul>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <ul>
+                <li>Chunks Received: {debugInfo.chunkCount}</li>
+                <li>Last Chunk Size: {debugInfo.lastChunkSize} bytes</li>
+                <li>Total Calculated: {debugInfo.totalCalculatedSize} bytes</li>
+              </ul>
+            </div>
+            <div>
+              <ul>
+                <li>Progress: {debugInfo.progressCalculation}</li>
+                <li>Current Progress: {transferProgress}%</li>
+                <li>Expected Size: {fileMetadata.size} bytes</li>
+              </ul>
+            </div>
+          </div>
         </div>
 
         {previewUrl && renderContentByType(fileType, previewUrl)}
@@ -428,7 +658,7 @@ const WebRTCReceiver = () => {
         {fileData && (
           <button 
             onClick={downloadFile} 
-            className="w-full bg-black text-white py-4 rounded-xl flex items-center justify-center space-x-2"
+            className="download-button w-full bg-black text-white py-4 rounded-xl flex items-center justify-center space-x-2 transition-all hover:bg-gray-800"
           >
             <Download className="w-6 h-6" />
             <span>Download File</span>
@@ -441,6 +671,30 @@ const WebRTCReceiver = () => {
   const renderContentByType = (fileType, url) => {
     if (!url) return null;
     
+    // Special handling for video files to enable better streaming
+    if (fileType.startsWith('video/') || fileType === 'video/x-matroska') {
+      return (
+        <div className="w-full aspect-video bg-black rounded-lg overflow-hidden shadow-lg">
+          <video 
+            ref={mediaElementRef}
+            controls 
+            autoPlay
+            playsInline
+            src={url} 
+            className="w-full h-full"
+            onLoadedData={() => {
+              console.log('Video data loaded');
+              // Attempt to play early for better streaming experience
+              mediaElementRef.current.play().catch(e => console.warn('Auto-play prevented:', e));
+            }}
+            onError={(e) => console.error('Video load error:', e)}
+          >
+            Your browser does not support the video tag.
+          </video>
+        </div>
+      );
+    }
+    
     // Image types
     if (fileType.startsWith('image/')) {
       return (
@@ -450,28 +704,18 @@ const WebRTCReceiver = () => {
             src={url} 
             alt={fileMetadata?.name || 'Image preview'} 
             className="max-w-full h-auto rounded-lg shadow-md max-h-[70vh] object-contain" 
-            onLoad={() => console.log('Image loaded successfully')}
+            onLoad={() => {
+              console.log('Image loaded successfully');
+              // Animation when image loads
+              gsap.from(mediaElementRef.current, {
+                opacity: 0,
+                scale: 0.9,
+                duration: 0.5,
+                ease: "power2.out"
+              });
+            }}
             onError={(e) => console.error('Image load error:', e)}
           />
-        </div>
-      );
-    }
-    
-    // Video types
-    if (fileType.startsWith('video/')) {
-      return (
-        <div className="w-full aspect-video bg-black rounded-lg overflow-hidden">
-          <video 
-            ref={mediaElementRef}
-            controls 
-            autoPlay
-            src={url} 
-            className="w-full h-full"
-            onLoadedData={() => console.log('Video data loaded')}
-            onError={(e) => console.error('Video load error:', e)}
-          >
-            Your browser does not support the video tag.
-          </video>
         </div>
       );
     }
@@ -479,7 +723,7 @@ const WebRTCReceiver = () => {
     // Audio types
     if (fileType.startsWith('audio/')) {
       return (
-        <div className="w-full p-4 bg-gray-100 rounded-lg">
+        <div className="w-full p-4 bg-gray-100 rounded-lg shadow-md">
           <div className="flex items-center gap-4">
             <audio 
               ref={mediaElementRef}
@@ -502,11 +746,23 @@ const WebRTCReceiver = () => {
     if (fileType === 'application/pdf') {
       return (
         <div className="w-full h-96 border rounded-lg overflow-hidden shadow-md">
-          <iframe 
-            src={url} 
-            title={fileMetadata?.name || 'PDF preview'} 
+          <object 
+            data={url} 
+            type="application/pdf"
+            width="100%"
+            height="100%"
             className="w-full h-full"
-          />
+          >
+            <div className="p-4 text-center">
+              <p>Your browser doesn't support embedded PDFs.</p>
+              <button 
+                onClick={downloadFile}
+                className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Download PDF
+              </button>
+            </div>
+          </object>
         </div>
       );
     }
@@ -516,28 +772,24 @@ const WebRTCReceiver = () => {
         fileType === 'application/json') {
       return (
         <div className="w-full max-h-96 border rounded-lg overflow-auto bg-gray-50 shadow-md">
-          <pre className="p-4 text-sm whitespace-pre-wrap">
-            {fileData && (
-              <iframe 
-                src={url} 
-                title={fileMetadata?.name || 'Text preview'} 
-                className="w-full h-full"
-              />
-            )}
-          </pre>
+          <iframe 
+            src={url} 
+            title={fileMetadata?.name || 'Text preview'} 
+            className="w-full h-96 border-0"
+          />
         </div>
       );
     }
     
-    // Office documents (preview not available, show download prompt)
+    // Office documents
     if (fileType.includes('office') || 
         fileType.startsWith('application/vnd.openxmlformats') || 
         fileType === 'application/msword') {
       return (
-        <div className="p-4 border rounded-lg bg-gray-50 text-center shadow-sm">
-          <p className="text-lg">Office Document Received</p>
+        <div className="p-6 border rounded-lg bg-gray-50 text-center shadow-md">
+          <p className="text-lg">{fileMetadata?.name || 'Office Document'}</p>
           <p className="text-sm text-gray-500 mt-2">
-            {fileMetadata?.name || 'Document'} - {(fileMetadata?.size / 1024 / 1024).toFixed(2)} MB
+            {(fileMetadata?.size / 1024 / 1024).toFixed(2)} MB
           </p>
           <button 
             onClick={downloadFile}
@@ -551,7 +803,7 @@ const WebRTCReceiver = () => {
     
     // Binary files or unknown types
     return (
-      <div className="p-4 border rounded-lg bg-gray-50 text-center shadow-sm">
+      <div className="p-6 border rounded-lg bg-gray-50 text-center shadow-md">
         <div className="flex flex-col items-center">
           <File className="w-12 h-12 text-gray-400 mb-2" />
           <p className="font-medium">{fileMetadata?.name || 'File received'}</p>
@@ -570,10 +822,15 @@ const WebRTCReceiver = () => {
   };
 
   return (
-    <div className="container mx-auto px-6 py-12">
+    <div className="container mx-auto px-6 py-16 relative" ref={containerRef}>
+      {/* HOSTY branding with more padding and black color */}
+      <div className="absolute top-8 left-8 font-bold text-black text-xl z-10">
+        HOSTY
+      </div>
+      
       <div className="max-w-3xl mx-auto">
-        <div className="bg-white shadow-lg rounded-xl p-8">
-          <div className="text-center mb-8">
+        <div className="bg-white shadow-xl rounded-xl p-8 backdrop-blur-sm">
+          <div className="text-center mb-8" ref={headerRef}>
             <h2 className="text-4xl font-extralight tracking-tight">
               {connectionStatus === 'disconnected' 
                 ? 'Waiting for Connection...' 
@@ -586,35 +843,33 @@ const WebRTCReceiver = () => {
                 ? `Streaming file... (${transferProgress}%)`
                 : ''}
             </p>
+            
+            {/* Connection status indicator */}
+            <div className="mt-4 flex justify-center">
+            <div className="connection-status inline-flex items-center px-3 py-1 rounded-full text-sm font-medium mr-2">
+  <div className={`h-2 w-2 rounded-full mr-2 ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+  <span>{connectionStatus === 'connected' ? 'Connected' : 'Disconnected'}</span>
+</div>
+            </div>
           </div>
 
-          {connectionStatus === 'disconnected' && (
-            <div className="text-center text-gray-500">
-              Please wait while we establish a connection...
+          {connectionStatus === 'connected' && !fileMetadata && (
+            <div className="text-center py-10 animate-on-scroll">
+              <div className="animate-pulse">
+                <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-200 flex items-center justify-center">
+                  <Download className="w-8 h-8 text-gray-400" />
+                </div>
+                <p className="text-gray-600">Waiting for sender to select a file...</p>
+              </div>
             </div>
           )}
 
-          {fileMetadata && renderFilePreview()}
+          {renderFilePreview()}
+        </div>
 
-          {/* Force refresh button for debugging */}
-          {fileMetadata && (
-            <button 
-              onClick={() => {
-                console.log('Manual refresh triggered');
-                // Recalculate total size
-                let totalSize = 0;
-                for (const chunk of receivedChunksRef.current) {
-                  totalSize += chunk.length;
-                }
-                setReceivedBytes(totalSize);
-                const progress = Math.min(100, Math.round((totalSize / fileMetadata.size) * 100));
-                setTransferProgress(progress);
-              }}
-              className="mt-4 p-2 bg-gray-200 text-gray-800 text-sm rounded"
-            >
-              Force Progress Refresh
-            </button>
-          )}
+        <div className="mt-6 text-center text-sm text-gray-500">
+          <p>Files are transferred directly between devices using WebRTC.</p>
+          <p>No data is stored on any server.</p>
         </div>
       </div>
     </div>
