@@ -41,7 +41,7 @@ const PremiumAnimatedLogo = () => {
   return (
     <div
       ref={logoRef}
-      className="fixed  top-8 left-8 font-bold text-black text-xl z-10 cursor-pointer"
+      className="fixed top-8 left-8 font-bold text-black text-xl z-10 cursor-pointer"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >

@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
-import Host from './components/Host'
 import SenderPage from './components/SenderPage'
 import BottomSection from './components/BottomSection'
 import { useLocation } from "react-router";
