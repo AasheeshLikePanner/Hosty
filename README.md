@@ -1,6 +1,6 @@
 # 📡 Hosty - Real-Time File Transfer (WebRTC)
 
-Hosty is a simple and efficient **real-time file transfer** system that allows users to send and receive files directly **peer-to-peer** using **WebRTC DataChannel**. Unlike traditional file-sharing methods, Hosty does not rely on a central server to store or relay data. Instead, files are transferred directly between users, ensuring **fast and secure** transfers. The **speed of transfer depends on your internet connection**, making it an efficient solution for sharing files without uploading or downloading to a server. WebSockets (via Socket.io) handle the initial connection setup, but once the peers are connected, the transfer happens purely via WebRTC.
+[Hosty](https://hosty-one.vercel.app/) is a simple and efficient **real-time file transfer** system that allows users to send and receive files directly **peer-to-peer** using **WebRTC DataChannel**. Unlike traditional file-sharing methods, Hosty does not rely on a central server to store or relay data. Instead, files are transferred directly between users, ensuring **fast and secure** transfers. The **speed of transfer depends on your internet connection**, making it an efficient solution for sharing files without uploading or downloading to a server. WebSockets (via Socket.io) handle the initial connection setup, but once the peers are connected, the transfer happens purely via WebRTC.
 
 ## ✨ Features
 
