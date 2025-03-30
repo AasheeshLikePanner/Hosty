@@ -42,7 +42,7 @@ const WebRTCReceiver = () => {
   const playTriedRef = useRef(false);
   const mediaBufferingRef = useRef(false);
 
-  const SIGNALING_SERVER = 'https://hosty-backend.vercel.app';
+  const SIGNALING_SERVER = 'https://hosty-tdsl.onrender.com';
 
   const FILE_ICONS = {
     'application/pdf': FileText,
@@ -755,10 +755,10 @@ const WebRTCReceiver = () => {
         </div>
 
         {/* Debug toggle button */}
-        <div className="flex justify-end">
+        <div className="justify-end flex cursor-pointer">
           <button 
             onClick={toggleDebugMode} 
-            className="text-xs text-gray-400 hover:text-gray-600"
+            className="text-xs text-gray-400 hover:text-gray-600 curosr-pointer transition-all duration-200"
           >
             {debugMode ? "Hide Debug Info" : "Show Debug Info"}
           </button>
