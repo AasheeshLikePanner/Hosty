@@ -31,7 +31,7 @@ const WebRTCSender = () => {
   const dataChannelRef = useRef(null);
   const sessionIdRef = useRef(null);
 
-  const SIGNALING_SERVER = 'http://localhost:3000';
+  const SIGNALING_SERVER = 'https://hosty-backend.vercel.app/';
 
   const FILE_ICONS = {
     'application/pdf': FileText,

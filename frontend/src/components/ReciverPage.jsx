@@ -42,7 +42,7 @@ const WebRTCReceiver = () => {
   const playTriedRef = useRef(false);
   const mediaBufferingRef = useRef(false);
 
-  const SIGNALING_SERVER = 'http://localhost:3000';
+  const SIGNALING_SERVER = 'https://hosty-backend.vercel.app';
 
   const FILE_ICONS = {
     'application/pdf': FileText,
