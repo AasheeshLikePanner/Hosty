@@ -15,7 +15,7 @@ Hosty is a simple and efficient **real-time file transfer** system that allows u
 
 - [ ] Add drag & drop support  
 - [ ] Show estimated time remaining  
-- [ ] Improve UI for a smoother experience  
+- [X] Improve UI for a smoother experience  
 
 ---
 
