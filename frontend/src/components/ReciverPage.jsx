@@ -15,6 +15,7 @@ const WebRTCReceiver = () => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingData, setStreamingData] = useState(null);
   const [receivedBytes, setReceivedBytes] = useState(0);
+  const [debugMode, setDebugMode] = useState(false);
   const [debugInfo, setDebugInfo] = useState({
     chunkCount: 0,
     lastChunkSize: 0,
@@ -38,6 +39,8 @@ const WebRTCReceiver = () => {
   const mediaSourceRef = useRef(null);
   const sourceBufferRef = useRef(null);
   const mediaQueueRef = useRef([]);
+  const playTriedRef = useRef(false);
+  const mediaBufferingRef = useRef(false);
 
   const SIGNALING_SERVER = 'http://localhost:3000';
 
@@ -166,11 +169,15 @@ const WebRTCReceiver = () => {
   const setupMediaSourceExtensions = (fileType) => {
     if ('MediaSource' in window) {
       try {
-        // Common video codecs
+        // Common video codecs with broader support
         const mimeCodecs = {
           'video/mp4': 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
           'video/webm': 'video/webm; codecs="vp8, vorbis"',
           'video/x-matroska': 'video/webm; codecs="vp8, vorbis"', // For MKV files, try webm codec
+          'audio/mp3': 'audio/mpeg',
+          'audio/mpeg': 'audio/mpeg',
+          'audio/ogg': 'audio/ogg; codecs="vorbis"',
+          'audio/wav': 'audio/wav'
         };
         
         const mimeType = mimeCodecs[fileType] || fileType;
@@ -188,7 +195,31 @@ const WebRTCReceiver = () => {
           try {
             sourceBufferRef.current = mediaSource.addSourceBuffer(mimeType);
             sourceBufferRef.current.mode = 'segments';
-            sourceBufferRef.current.addEventListener('updateend', processMediaQueue);
+            
+            // Add more listeners for better error handling
+            sourceBufferRef.current.addEventListener('updateend', () => {
+              mediaBufferingRef.current = false;
+              processMediaQueue();
+              
+              // Try to play the video as soon as we have some data in the buffer
+              if (mediaElementRef.current && !playTriedRef.current && receivedChunksRef.current.length >= 2) {
+                console.log('Attempting to play media after buffer update');
+                mediaElementRef.current.play()
+                  .then(() => {
+                    playTriedRef.current = true;
+                    console.log('Media playback started successfully');
+                  })
+                  .catch(e => {
+                    console.warn('Auto-play prevented, will retry later:', e);
+                    // Will try again on next updateend
+                  });
+              }
+            });
+            
+            sourceBufferRef.current.addEventListener('error', (e) => {
+              console.error('SourceBuffer error:', e);
+              mediaBufferingRef.current = false;
+            });
             
             // Process any queued media data
             processMediaQueue();
@@ -212,12 +243,32 @@ const WebRTCReceiver = () => {
   const processMediaQueue = () => {
     if (mediaQueueRef.current.length > 0 && 
         sourceBufferRef.current && 
-        !sourceBufferRef.current.updating) {
+        !sourceBufferRef.current.updating && 
+        !mediaBufferingRef.current) {
+      
+      mediaBufferingRef.current = true;
       const chunk = mediaQueueRef.current.shift();
+      
       try {
         sourceBufferRef.current.appendBuffer(chunk);
       } catch (e) {
         console.error('Error appending buffer:', e);
+        mediaBufferingRef.current = false;
+        
+        // Try to recover by clearing the buffer and starting fresh
+        if (e.name === 'QuotaExceededError') {
+          try {
+            // If we get a quota error, try to remove some of the old data
+            const currentTime = mediaElementRef.current ? mediaElementRef.current.currentTime : 0;
+            if (currentTime > 10 && sourceBufferRef.current.buffered.length > 0) {
+              const start = sourceBufferRef.current.buffered.start(0);
+              const removeEnd = Math.max(start, currentTime - 10); // Keep 10 seconds before current time
+              sourceBufferRef.current.remove(start, removeEnd);
+            }
+          } catch (removeError) {
+            console.error('Error recovering from quota exceeded:', removeError);
+          }
+        }
       }
     }
   };
@@ -240,7 +291,8 @@ const WebRTCReceiver = () => {
 
     const dataChannel = peerConnection.createDataChannel('fileTransfer', {
       negotiated: true,
-      id: 0
+      id: 0,
+      ordered: true  // Ensure ordered delivery for better media streaming
     });
     
     dataChannelRef.current = dataChannel;
@@ -251,9 +303,9 @@ const WebRTCReceiver = () => {
       
       // Animate connection status change
       gsap.to('.connection-status', {
-        backgroundColor: '#22c55e',
-        scale: 1.1,
-        duration: 0.5,
+        backgroundColor: '#000000',
+        scale: 1.05,
+        duration: 0.3,
         yoyo: true,
         repeat: 1
       });
@@ -286,6 +338,26 @@ const WebRTCReceiver = () => {
 
     peerConnection.oniceconnectionstatechange = () => {
       console.log('ICE connection state:', peerConnection.iceConnectionState);
+      
+      // Add visual feedback for connection state changes
+      if (peerConnection.iceConnectionState === 'connected' || 
+          peerConnection.iceConnectionState === 'completed') {
+        gsap.to('.connection-indicator', {
+          backgroundColor: '#000000',
+          duration: 0.3
+        });
+      } else if (peerConnection.iceConnectionState === 'failed' || 
+                peerConnection.iceConnectionState === 'disconnected') {
+        gsap.to('.connection-indicator', {
+          backgroundColor: '#888888',
+          duration: 0.3
+        });
+        
+        // Reset if disconnected
+        if (peerConnection.iceConnectionState === 'disconnected') {
+          setConnectionStatus('disconnected');
+        }
+      }
     };
 
     socket.on('offer', async ({ offer }) => {
@@ -347,6 +419,7 @@ const WebRTCReceiver = () => {
     setTransferProgress(0);
     setReceivedBytes(0);
     totalBytesRef.current = metadata.size;
+    playTriedRef.current = false;
     
     setDebugInfo({
       chunkCount: 0,
@@ -355,11 +428,26 @@ const WebRTCReceiver = () => {
       progressCalculation: "0%"
     });
     
+    // Reset previous media elements
+    if (streamingData) {
+      URL.revokeObjectURL(streamingData);
+      setStreamingData(null);
+    }
+    
+    if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
+      try {
+        mediaSourceRef.current.endOfStream();
+      } catch (e) {
+        console.error('Error ending previous media stream:', e);
+      }
+    }
+    
     // Special handling for video streaming
-    if (metadata.type.startsWith('video/') || metadata.type === 'video/x-matroska') {
+    if (metadata.type.startsWith('video/') || metadata.type === 'video/x-matroska' || metadata.type.startsWith('audio/')) {
       setIsStreaming(true);
+      mediaQueueRef.current = []; // Clear the queue
       
-      // Set up MediaSource for video streaming
+      // Set up MediaSource for video/audio streaming
       const mseUrl = setupMediaSourceExtensions(metadata.type);
       if (mseUrl) {
         setStreamingData(mseUrl);
@@ -377,10 +465,10 @@ const WebRTCReceiver = () => {
     // Animate the appearance of file info
     gsap.from(".file-info", {
       opacity: 0,
-      x: -20,
+      x: -10,
       stagger: 0.1,
-      delay: 0.3,
-      duration: 0.6,
+      delay: 0.2,
+      duration: 0.5,
       ease: "power2.out"
     });
   };
@@ -426,24 +514,27 @@ const WebRTCReceiver = () => {
       setTransferProgress(progress);
     }
 
-    // Handle MediaSource streaming for video files
-    if (isStreaming && fileMetadata && sourceBufferRef.current) {
-      if (fileMetadata.type.startsWith('video/') || fileMetadata.type === 'video/x-matroska') {
+    // Handle MediaSource streaming for video/audio files
+    if (isStreaming && fileMetadata) {
+      if ((fileMetadata.type.startsWith('video/') || 
+          fileMetadata.type === 'video/x-matroska' || 
+          fileMetadata.type.startsWith('audio/')) && 
+          sourceBufferRef.current) {
         try {
           // Queue this chunk for MediaSource processing
           mediaQueueRef.current.push(chunk.buffer);
           
           // Process the queue if sourceBuffer is not currently updating
-          if (!sourceBufferRef.current.updating) {
+          if (!sourceBufferRef.current.updating && !mediaBufferingRef.current) {
             processMediaQueue();
           }
           
-          // Try to start playing as soon as we have some data
-          if (mediaElementRef.current && receivedChunksRef.current.length >= 3) {
-            mediaElementRef.current.play().catch(e => console.warn('Auto-play prevented:', e));
+          // Only update streaming preview if we have enough chunks or for regular updates
+          if (receivedChunksRef.current.length % 5 === 0 || receivedChunksRef.current.length < 5) {
+            updateStreamPreview();
           }
           
-          return; // Skip regular streaming updates for video when using MSE
+          return; // Skip regular streaming updates for media when using MSE
         } catch (e) {
           console.error('Error in MSE handling:', e);
           // Fall back to regular streaming if MSE fails
@@ -456,8 +547,8 @@ const WebRTCReceiver = () => {
         if (fileMetadata.type.startsWith('audio/') || 
             fileMetadata.type.startsWith('video/') || 
             fileMetadata.type === 'video/x-matroska') {
-          // Update every 500KB or on first chunk
-          if (totalReceivedBytes % 500000 < chunk.length || totalReceivedBytes === chunk.length) {
+          // Update every 250KB or on first chunk
+          if (totalReceivedBytes % 250000 < chunk.length || totalReceivedBytes === chunk.length) {
             updateStreamPreview();
           }
         } 
@@ -492,14 +583,25 @@ const WebRTCReceiver = () => {
       const url = URL.createObjectURL(blob);
       setStreamingData(url);
       
-      // Pulse animation on preview update
+      // Subtle pulse animation on preview update
       if (previewRef.current) {
         gsap.to(previewRef.current, {
-          boxShadow: "0 0 15px rgba(59, 130, 246, 0.5)",
-          duration: 0.3,
+          boxShadow: "0 0 10px rgba(0, 0, 0, 0.2)",
+          duration: 0.2,
           yoyo: true,
           repeat: 1
         });
+      }
+      
+      // For non-MSE media, try to play if not already playing
+      if ((fileMetadata.type.startsWith('video/') || fileMetadata.type.startsWith('audio/')) && 
+          mediaElementRef.current && !playTriedRef.current) {
+        mediaElementRef.current.play()
+          .then(() => {
+            playTriedRef.current = true;
+            console.log('Media playback started successfully');
+          })
+          .catch(e => console.warn('Auto-play prevented:', e));
       }
       
       console.log('Stream preview updated, blob size:', blob.size, 'Current progress:', transferProgress);
@@ -539,7 +641,19 @@ const WebRTCReceiver = () => {
       // If using MediaSource, we need to indicate we're done
       if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
         try {
-          mediaSourceRef.current.endOfStream();
+          // Process any remaining chunks in the queue first
+          while (mediaQueueRef.current.length > 0 && !sourceBufferRef.current.updating) {
+            const finalChunk = mediaQueueRef.current.shift();
+            sourceBufferRef.current.appendBuffer(finalChunk);
+          }
+          
+          // Set a timeout to ensure all buffers are processed before ending the stream
+          setTimeout(() => {
+            if (mediaSourceRef.current.readyState === 'open') {
+              mediaSourceRef.current.endOfStream();
+              console.log('Media stream successfully ended');
+            }
+          }, 200);
         } catch (e) {
           console.error('Error ending media stream:', e);
         }
@@ -547,21 +661,26 @@ const WebRTCReceiver = () => {
       
       const dataUrl = URL.createObjectURL(receivedBlob);
       setFileData(dataUrl);
-      setIsStreaming(false);
       
-      // Celebration animation
+      // We keep streaming flag true for video/audio to allow playback
+      if (!fileMetadataRef.current.type.startsWith('video/') && 
+          !fileMetadataRef.current.type.startsWith('audio/')) {
+        setIsStreaming(false);
+      }
+      
+      // Subtle completion animation
       gsap.to(containerRef.current, {
         keyframes: [
-          { scale: 1.02, duration: 0.2 },
+          { scale: 1.01, duration: 0.2 },
           { scale: 1, duration: 0.2 }
         ]
       });
       
       gsap.from(".download-button", {
         opacity: 0,
-        y: 20,
-        duration: 0.6,
-        ease: "back.out(1.7)"
+        y: 10,
+        duration: 0.5,
+        ease: "power2.out"
       });
       
       setTimeout(() => {
@@ -585,7 +704,7 @@ const WebRTCReceiver = () => {
     
     // Download animation
     gsap.to(".download-button", {
-      scale: 0.95,
+      scale: 0.97,
       duration: 0.1,
       yoyo: true,
       repeat: 1
@@ -602,6 +721,10 @@ const WebRTCReceiver = () => {
     return File;
   };
 
+  const toggleDebugMode = () => {
+    setDebugMode(!debugMode);
+  };
+
   const renderFilePreview = () => {
     if (!fileMetadata) return null;
 
@@ -610,58 +733,69 @@ const WebRTCReceiver = () => {
     const previewUrl = fileData || streamingData;
 
     return (
-      <div className="mt-8 space-y-4 animate-on-scroll" ref={previewRef}>
-        <div className="flex items-center space-x-4 file-info">
-          <FileIcon className="w-12 h-12 text-gray-700" />
+      <div className="mt-6 space-y-4 animate-on-scroll" ref={previewRef}>
+        <div className="flex items-center space-x-3 file-info">
+          <FileIcon className="w-8 h-8 text-black" />
           <div>
-            <p className="text-xl font-light">{fileMetadata.name}</p>
-            <p className="text-gray-500">
+            <p className="text-base font-light truncate">{fileMetadata.name}</p>
+            <p className="text-gray-500 text-sm">
               {(fileMetadata.size / 1024 / 1024).toFixed(2)} MB
-              {receivedBytes > 0 && ` • ${(receivedBytes / 1024 / 1024).toFixed(2)} MB received`}
             </p>
           </div>
         </div>
 
-        <div className="w-full bg-gray-200 rounded-full h-2.5 mb-2" ref={progressRef}>
+        <div className="w-full bg-gray-100 rounded-full h-1.5 mb-2" ref={progressRef}>
           <div 
-            className="bg-blue-600 h-2.5 rounded-full transition-all duration-300 progress-bar" 
+            className="bg-black h-1.5 rounded-full transition-all duration-300 progress-bar" 
             style={{ width: `${transferProgress}%` }}
           ></div>
-          <p className="text-center text-sm text-gray-600 mt-1 progress-text">
+          <p className="text-center text-xs text-gray-500 mt-1 progress-text">
             {transferProgress}% {isStreaming && transferProgress < 100 ? "(Streaming)" : ""}
           </p>
         </div>
 
+        {/* Debug toggle button */}
+        <div className="flex justify-end">
+          <button 
+            onClick={toggleDebugMode} 
+            className="text-xs text-gray-400 hover:text-gray-600"
+          >
+            {debugMode ? "Hide Debug Info" : "Show Debug Info"}
+          </button>
+        </div>
+
         {/* Collapsible debug section */}
-        <div className="bg-gray-100 p-4 my-2 rounded text-xs font-mono">
-          <p>Debug Info:</p>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <ul>
-                <li>Chunks Received: {debugInfo.chunkCount}</li>
-                <li>Last Chunk Size: {debugInfo.lastChunkSize} bytes</li>
-                <li>Total Calculated: {debugInfo.totalCalculatedSize} bytes</li>
-              </ul>
-            </div>
-            <div>
-              <ul>
-                <li>Progress: {debugInfo.progressCalculation}</li>
-                <li>Current Progress: {transferProgress}%</li>
-                <li>Expected Size: {fileMetadata.size} bytes</li>
-              </ul>
+        {debugMode && (
+          <div className="bg-gray-50 p-3 my-1 rounded text-xs font-mono border border-gray-100">
+            <p className="font-semibold mb-1">Debug Info:</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <ul>
+                  <li>Chunks: {debugInfo.chunkCount}</li>
+                  <li>Last Chunk: {debugInfo.lastChunkSize} bytes</li>
+                  <li>Total: {debugInfo.totalCalculatedSize} bytes</li>
+                </ul>
+              </div>
+              <div>
+                <ul>
+                  <li>Progress: {debugInfo.progressCalculation}</li>
+                  <li>Current: {transferProgress}%</li>
+                  <li>Expected: {fileMetadata.size} bytes</li>
+                </ul>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {previewUrl && renderContentByType(fileType, previewUrl)}
 
         {fileData && (
           <button 
             onClick={downloadFile} 
-            className="download-button w-full bg-black text-white py-4 rounded-xl flex items-center justify-center space-x-2 transition-all hover:bg-gray-800"
+            className="download-button w-full bg-black text-white py-3 rounded-md flex items-center justify-center space-x-2 transition-all hover:bg-gray-800"
           >
-            <Download className="w-6 h-6" />
-            <span>Download File</span>
+            <Download className="w-5 h-5" />
+            <span className="font-light">Download</span>
           </button>
         )}
       </div>
@@ -674,7 +808,7 @@ const WebRTCReceiver = () => {
     // Special handling for video files to enable better streaming
     if (fileType.startsWith('video/') || fileType === 'video/x-matroska') {
       return (
-        <div className="w-full aspect-video bg-black rounded-lg overflow-hidden shadow-lg">
+        <div className="w-full aspect-video bg-black rounded-md overflow-hidden shadow-sm">
           <video 
             ref={mediaElementRef}
             controls 
@@ -688,6 +822,17 @@ const WebRTCReceiver = () => {
               mediaElementRef.current.play().catch(e => console.warn('Auto-play prevented:', e));
             }}
             onError={(e) => console.error('Video load error:', e)}
+            onCanPlay={() => {
+              console.log('Video can play now');
+              if (!playTriedRef.current) {
+                mediaElementRef.current.play()
+                  .then(() => {
+                    playTriedRef.current = true;
+                    console.log('Video playback started on canplay event');
+                  })
+                  .catch(e => console.warn('Auto-play prevented on canplay:', e));
+              }
+            }}
           >
             Your browser does not support the video tag.
           </video>
@@ -699,45 +844,34 @@ const WebRTCReceiver = () => {
     if (fileType.startsWith('image/')) {
       return (
         <div className="flex justify-center">
-          <img 
-            ref={mediaElementRef} 
-            src={url} 
-            alt={fileMetadata?.name || 'Image preview'} 
-            className="max-w-full h-auto rounded-lg shadow-md max-h-[70vh] object-contain" 
-            onLoad={() => {
-              console.log('Image loaded successfully');
-              // Animation when image loads
-              gsap.from(mediaElementRef.current, {
-                opacity: 0,
-                scale: 0.9,
-                duration: 0.5,
-                ease: "power2.out"
-              });
-            }}
-            onError={(e) => console.error('Image load error:', e)}
-          />
+          <img src={url}
+          alt={fileMetadata.name}
+          className="max-h-96 rounded-md shadow-sm"
+          onLoad={() => console.log('Image loaded successfully')}
+          onError={() => console.error('Error loading image')}
+        />
         </div>
       );
     }
     
-    // Audio types
+    // Audio files
     if (fileType.startsWith('audio/')) {
       return (
-        <div className="w-full p-4 bg-gray-100 rounded-lg shadow-md">
-          <div className="flex items-center gap-4">
-            <audio 
-              ref={mediaElementRef}
-              controls 
-              autoPlay
-              src={url} 
-              className="flex-1"
-              onLoadedData={() => console.log('Audio data loaded')}
-              onError={(e) => console.error('Audio load error:', e)}
-            />
-            <div className="text-sm text-gray-600">
-              {fileMetadata?.name || 'Audio file'}
-            </div>
-          </div>
+        <div className="w-full bg-gray-50 p-4 rounded-md">
+          <audio 
+            ref={mediaElementRef}
+            controls 
+            className="w-full" 
+            src={url}
+            autoPlay
+            onCanPlay={() => {
+              console.log('Audio can play now');
+              mediaElementRef.current.play()
+                .catch(e => console.warn('Audio autoplay prevented:', e));
+            }}
+          >
+            Your browser does not support the audio element.
+          </audio>
         </div>
       );
     }
@@ -745,133 +879,63 @@ const WebRTCReceiver = () => {
     // PDF files
     if (fileType === 'application/pdf') {
       return (
-        <div className="w-full h-96 border rounded-lg overflow-hidden shadow-md">
-          <object 
-            data={url} 
-            type="application/pdf"
-            width="100%"
-            height="100%"
-            className="w-full h-full"
-          >
-            <div className="p-4 text-center">
-              <p>Your browser doesn't support embedded PDFs.</p>
-              <button 
-                onClick={downloadFile}
-                className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Download PDF
-              </button>
-            </div>
-          </object>
-        </div>
-      );
-    }
-    
-    // Text and code files
-    if (fileType.startsWith('text/') || 
-        fileType === 'application/json') {
-      return (
-        <div className="w-full max-h-96 border rounded-lg overflow-auto bg-gray-50 shadow-md">
+        <div className="w-full aspect-[4/3] bg-gray-50 rounded-md overflow-hidden shadow-sm">
           <iframe 
             src={url} 
-            title={fileMetadata?.name || 'Text preview'} 
-            className="w-full h-96 border-0"
-          />
+            className="w-full h-full" 
+            title={fileMetadata ? fileMetadata.name : 'PDF Preview'}
+          ></iframe>
         </div>
       );
     }
     
-    // Office documents
-    if (fileType.includes('office') || 
-        fileType.startsWith('application/vnd.openxmlformats') || 
-        fileType === 'application/msword') {
+    // Text files and code
+    if (fileType.startsWith('text/') || fileType === 'application/json') {
       return (
-        <div className="p-6 border rounded-lg bg-gray-50 text-center shadow-md">
-          <p className="text-lg">{fileMetadata?.name || 'Office Document'}</p>
-          <p className="text-sm text-gray-500 mt-2">
-            {(fileMetadata?.size / 1024 / 1024).toFixed(2)} MB
-          </p>
-          <button 
-            onClick={downloadFile}
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Download Document
-          </button>
+        <div className="w-full h-48 overflow-auto bg-gray-50 p-4 rounded-md font-mono text-sm">
+          <p>Text preview loading...</p>
+          {/* Text content would need to be read and displayed using fetch or FileReader */}
         </div>
       );
     }
     
-    // Binary files or unknown types
+    // Default - just show an icon 
     return (
-      <div className="p-6 border rounded-lg bg-gray-50 text-center shadow-md">
-        <div className="flex flex-col items-center">
-          <File className="w-12 h-12 text-gray-400 mb-2" />
-          <p className="font-medium">{fileMetadata?.name || 'File received'}</p>
-          <p className="text-sm text-gray-500 mt-1">
-            {(fileMetadata?.size / 1024 / 1024).toFixed(2)} MB
-          </p>
-          <button 
-            onClick={downloadFile}
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Download File
-          </button>
+      <div className="w-full p-10 flex justify-center items-center">
+        <div className="text-center">
+          <FileIcon className="mx-auto w-16 h-16 text-gray-400" />
+          <p className="mt-2 text-gray-500">Preview not available</p>
         </div>
       </div>
     );
   };
 
   return (
-    <div className="container mx-auto px-6 py-16 relative" ref={containerRef}>
-      {/* HOSTY branding with more padding and black color */}
-      <div className="absolute top-8 left-8 font-bold text-black text-xl z-10">
-        HOSTY
+    <div 
+      ref={containerRef} 
+      className="container mx-auto max-w-xl p-4 md:p-6 bg-white rounded-lg shadow-sm"
+    >
+      <div ref={headerRef}>
+        <h1 className="text-2xl font-light mb-4">File Receiver</h1>
+        <div className="flex items-center space-x-2">
+          <div 
+            className={`w-3 h-3 rounded-full connection-indicator ${
+              connectionStatus === 'connected' ? 'bg-black' : 'bg-gray-300'
+            }`}
+          ></div>
+          <p className="text-sm text-gray-500 connection-status">
+            {connectionStatus === 'connected' ? 'Connected' : 'Waiting for connection...'}
+          </p>
+        </div>
       </div>
       
-      <div className="max-w-3xl mx-auto">
-        <div className="bg-white shadow-xl rounded-xl p-8 backdrop-blur-sm">
-          <div className="text-center mb-8" ref={headerRef}>
-            <h2 className="text-4xl font-extralight tracking-tight">
-              {connectionStatus === 'disconnected' 
-                ? 'Waiting for Connection...' 
-                : 'File Transfer'}
-            </h2>
-            <p className="text-gray-500 mt-2">
-              {connectionStatus === 'connected' && !fileMetadata 
-                ? 'Ready to receive files' 
-                : connectionStatus === 'connected' && isStreaming && transferProgress < 100
-                ? `Streaming file... (${transferProgress}%)`
-                : ''}
-            </p>
-            
-            {/* Connection status indicator */}
-            <div className="mt-4 flex justify-center">
-            <div className="connection-status inline-flex items-center px-3 py-1 rounded-full text-sm font-medium mr-2">
-  <div className={`h-2 w-2 rounded-full mr-2 ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-  <span>{connectionStatus === 'connected' ? 'Connected' : 'Disconnected'}</span>
-</div>
-            </div>
-          </div>
-
-          {connectionStatus === 'connected' && !fileMetadata && (
-            <div className="text-center py-10 animate-on-scroll">
-              <div className="animate-pulse">
-                <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-200 flex items-center justify-center">
-                  <Download className="w-8 h-8 text-gray-400" />
-                </div>
-                <p className="text-gray-600">Waiting for sender to select a file...</p>
-              </div>
-            </div>
-          )}
-
-          {renderFilePreview()}
+      {renderFilePreview()}
+      
+      {!fileMetadata && (
+        <div className="my-10 text-center text-gray-500 animate-on-scroll">
+          <p>Waiting for file transfer to begin...</p>
         </div>
-
-        <div className="mt-6 text-center text-sm text-gray-500">
-          <p>Files are transferred directly between devices using WebRTC.</p>
-          <p>No data is stored on any server.</p>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

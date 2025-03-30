@@ -4,7 +4,10 @@ import {
   Lock, 
   UserX,
   Zap,
-  CloudLightning
+  CloudLightning,
+  Globe,
+  ShieldCheck,
+  RefreshCw
 } from 'lucide-react';
 
 const PremiumWebsite = () => {
@@ -87,20 +90,41 @@ const PremiumWebsite = () => {
           {[
             { 
               Icon: Zap, 
-              title: "Direct Transfer", 
-              description: "Zero-latency peer-to-peer exchange" 
+              title: "Lightning Fast", 
+              description: "Direct peer-to-peer transfer with zero server bottlenecks", 
+              details: "Files transfer at the maximum speed your connection allows"
             },
             { 
-              Icon: Lock, 
-              title: "Military Encryption", 
-              description: "Quantum-level security protocol" 
+              Icon: ShieldCheck, 
+              title: "Secure Hashing", 
+              description: "End-to-end encryption with SHA-256 hashing",
+              details: "Your data remains private and protected throughout the entire transfer process"
+            },
+            { 
+              Icon: UserX, 
+              title: "No Signup Required", 
+              description: "Use instantly with zero registration or personal data collection",
+              details: "We don't store any of your information - ever"
             },
             { 
               Icon: CloudLightning, 
               title: "Instant Sync", 
-              description: "Lightspeed file transmission" 
+              description: "Lightspeed file transmission across all devices",
+              details: "Compatible with mobile, desktop, and tablet - sync anywhere"
+            },
+            { 
+              Icon: Globe, 
+              title: "Worldwide Access", 
+              description: "Connect and share from anywhere on the planet",
+              details: "No region restrictions or artificial limitations"
+            },
+            { 
+              Icon: RefreshCw, 
+              title: "User-Level Connection", 
+              description: "Direct device-to-device connection with no server middleware",
+              details: "Maximum speed and privacy with true peer-to-peer architecture"
             }
-          ].map(({ Icon, title, description }, index) => (
+          ].map(({ Icon, title, description, details }, index) => (
             <motion.div
               key={index}
               variants={{
@@ -109,18 +133,23 @@ const PremiumWebsite = () => {
               }}
               whileHover={{ 
                 scale: 1.02,
-                transition: { duration: 0.2 }
+                transition: { duration: 0.2 },
               }}
               className="border border-black/10 rounded-lg p-6 text-center 
-                         transition-all duration-300 group"
+                         transition-all duration-300 group hover:shadow-lg"
             >
-              <Icon 
-                className="mx-auto mb-4 w-10 h-10 
-                           text-black opacity-70 
+              <div className="bg-gray-50 rounded-full p-3 mx-auto mb-4 w-16 h-16 flex items-center justify-center">
+                <Icon 
+                  className="w-8 h-8 text-black opacity-70 
                            group-hover:scale-110 transition-transform"
-              />
+                />
+              </div>
               <h3 className="font-medium text-lg mb-2">{title}</h3>
-              <p className="text-gray-600 text-sm">{description}</p>
+              <p className="text-gray-600 text-sm mb-3">{description}</p>
+              <div className="mt-4 pt-4 border-t border-gray-100 text-xs text-gray-500 hover:text-underline cursor-pointer">
+              
+                {details}
+              </div>
             </motion.div>
           ))}
         </motion.div>
@@ -139,15 +168,23 @@ const PremiumWebsite = () => {
               faqs={[
                 {
                   question: "How secure is the transfer?",
-                  answer: "Utilizing end-to-end encryption with zero-knowledge architecture, ensuring absolute data privacy."
+                  answer: "We use end-to-end encryption with SHA-256 hashing to ensure your data remains completely private. Since files transfer directly between devices with no server middleware, your data is never stored or accessible to third parties."
                 },
                 {
                   question: "What are the file size limits?",
-                  answer: "Seamlessly transfer files up to 5GB with our advanced compression technologies."
+                  answer: "Seamlessly transfer files up to 5GB with our advanced compression technologies. The direct peer-to-peer connection means transfer speeds are limited only by your internet connection."
                 },
                 {
                   question: "Do I need an account?",
-                  answer: "No account required. Instant, friction-free file sharing with a single link."
+                  answer: "Absolutely not. We've eliminated all signup requirements and user data collection. Simply open the app, generate a transfer link, and share instantly with anyone. No forms, no passwords, no hassle."
+                },
+                {
+                  question: "How does the speed compare to other services?",
+                  answer: "Our user-level connection technology bypasses server bottlenecks entirely. Files transfer directly between devices at maximum speed, often 3-5x faster than traditional cloud-based transfer services."
+                },
+                {
+                  question: "Do you store any data?",
+                  answer: "We have a strict zero-storage policy. Your files transfer directly between devices without ever touching our servers. We don't collect, store, or analyze any personal information or file content."
                 }
               ]}
             />

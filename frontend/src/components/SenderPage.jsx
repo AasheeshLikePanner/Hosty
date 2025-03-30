@@ -4,7 +4,6 @@ import { Upload, FileText, Image, Video, FileCode, Send, Check, X, Copy, Chevron
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 
-// Register GSAP plugins
 gsap.registerPlugin(ScrollTrigger);
 
 const WebRTCSender = () => {
@@ -17,7 +16,6 @@ const WebRTCSender = () => {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(null);
 
-  // Refs for animations
   const containerRef = useRef(null);
   const logoRef = useRef(null);
   const headerRef = useRef(null);
@@ -33,7 +31,7 @@ const WebRTCSender = () => {
   const dataChannelRef = useRef(null);
   const sessionIdRef = useRef(null);
 
-  const SIGNALING_SERVER = 'http://localhost:3000'; // Update with your signaling server URL
+  const SIGNALING_SERVER = 'http://localhost:3000';
 
   const FILE_ICONS = {
     'application/pdf': FileText,
@@ -45,43 +43,82 @@ const WebRTCSender = () => {
     'audio/': Video
   };
 
-  // Initialize connection
   useEffect(() => {
-    initializeConnection();
+    const tl = gsap.timeline();
+    tl.from(logoRef.current, { x: -20, opacity: 0, duration: 0.6, ease: "power3.out" });
+    tl.from(headerRef.current, { y: 20, opacity: 0, duration: 0.6, ease: "power3.out" }, "-=0.3");
+    tl.from(uploadRef.current, { y: 30, opacity: 0, duration: 0.8, ease: "power3.out" }, "-=0.4");
+
+    
+    gsap.from(".section-fade-in", {
+      scrollTrigger: {
+        trigger: ".section-fade-in",
+        start: "top 85%",
+        toggleActions: "play none none none"
+      },
+      y: 30,
+      opacity: 0,
+      duration: 0.6,
+      stagger: 0.15,
+      ease: "power3.out"
+    });
+
+    const logo = logoRef.current;
+    if (logo) {
+      logo.addEventListener("mouseenter", () => {
+        gsap.to(logo, { scale: 1.05, duration: 0.2, ease: "power1.out" });
+      });
+      logo.addEventListener("mouseleave", () => {
+        gsap.to(logo, { scale: 1, duration: 0.2, ease: "power1.out" });
+      });
+    }
+
     return () => {
+      if (logo) {
+        logo.removeEventListener("mouseenter", () => {});
+        logo.removeEventListener("mouseleave", () => {});
+      }
+      ScrollTrigger.getAll().forEach(trigger => trigger.kill());
       cleanupConnection();
     };
   }, []);
 
-  const initializeConnection = () => {
-    try {
-      // Initialize socket connection
-      socketRef.current = io(SIGNALING_SERVER, {
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000
+  useEffect(() => {
+    if (fileTransfer.status === 'transferring' && progressRef.current) {
+      gsap.to(progressRef.current, {
+        width: `${fileTransfer.progress}%`,
+        duration: 0.3,
+        ease: "power1.out"
       });
-
-      // Create unique session 
-      sessionIdRef.current = generateSessionId();
-      setSessionLink(`${window.location.origin}/receiver/${sessionIdRef.current}`);
-
-      // Setup socket event listeners
-      setupSocketListeners(sessionIdRef.current);
-
-      // Add error handling for socket
-      socketRef.current.on('connect_error', (error) => {
-        console.error('Socket connection error:', error);
-        setError('Failed to connect to signaling server');
-      });
-    } catch (err) {
-      console.error('Initialization error:', err);
-      setError('Failed to initialize connection');
     }
+  }, [fileTransfer.progress, fileTransfer.status]);
+
+  useEffect(() => {
+    if (fileTransfer.status === 'complete' && buttonRef.current) {
+      gsap.to(buttonRef.current, { 
+        backgroundColor: "#10B981", 
+        duration: 0.5,
+        ease: "power2.out"
+      });
+      gsap.to(buttonRef.current, {
+        scale: 1.03,
+        duration: 0.2,
+        yoyo: true,
+        repeat: 1,
+        ease: "back.out(1.5)"
+      });
+    }
+  }, [fileTransfer.status]);
+
+  const generateSessionId = () => {
+    return Math.random().toString(36).substring(2, 10);
   };
 
   const cleanupConnection = () => {
     if (socketRef.current) {
+      socketRef.current.off('receiver-joined');
+      socketRef.current.off('answer');
+      socketRef.current.off('candidate');
       socketRef.current.disconnect();
       socketRef.current = null;
     }
@@ -97,145 +134,29 @@ const WebRTCSender = () => {
     }
   };
 
-  const resetConnection = () => {
+  const initializeNewSession = () => {
     cleanupConnection();
-    
-    // Reset file transfer state
-    setFileTransfer(prev => ({
-      ...prev,
-      status: 'idle',
-      progress: 0
-    }));
-    
-    // Animate button back to idle state
-    if (buttonRef.current) {
-      gsap.to(buttonRef.current, {
-        backgroundColor: "#000000",
-        color: "#FFFFFF",
-        scale: 1,
-        duration: 0.4,
-        ease: "power2.out"
-      });
-    }
-    
-    // Initialize new connection
-    initializeConnection();
-  };
 
-  // Initialize GSAP animations
-  useEffect(() => {
-    // Initial animations on page load
-    const tl = gsap.timeline();
+    // Generate new session ID and link
+    sessionIdRef.current = generateSessionId();
+    const newSessionLink = `${window.location.origin}/receiver/${sessionIdRef.current}`;
+    setSessionLink(newSessionLink);
     
-    tl.from(logoRef.current, {
-      x: -20,
-      opacity: 0,
-      duration: 0.6,
-      ease: "power3.out"
+    // Initialize socket connection
+    socketRef.current = io(SIGNALING_SERVER, {
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000
     });
-    
-    tl.from(headerRef.current, {
-      y: 20,
-      opacity: 0,
-      duration: 0.6,
-      ease: "power3.out"
-    }, "-=0.3");
-    
-    tl.from(uploadRef.current, {
-      y: 30,
-      opacity: 0,
-      duration: 0.8,
-      ease: "power3.out"
-    }, "-=0.4");
-    
-    // Initialize scroll animations
-    gsap.from(".section-fade-in", {
-      scrollTrigger: {
-        trigger: ".section-fade-in",
-        start: "top 85%",
-        toggleActions: "play none none none"
-      },
-      y: 30,
-      opacity: 0,
-      duration: 0.6,
-      stagger: 0.15,
-      ease: "power3.out"
+
+    // Setup socket listeners
+    socketRef.current.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
+      setError('Failed to connect to signaling server');
     });
-    
-    // Animation for logo hover
-    const logo = logoRef.current;
-    if (logo) {
-      logo.addEventListener("mouseenter", () => {
-        gsap.to(logo, { scale: 1.05, duration: 0.2, ease: "power1.out" });
-      });
-      
-      logo.addEventListener("mouseleave", () => {
-        gsap.to(logo, { scale: 1, duration: 0.2, ease: "power1.out" });
-      });
-    }
-    
-    return () => {
-      // Cleanup
-      if (logo) {
-        logo.removeEventListener("mouseenter", () => {});
-        logo.removeEventListener("mouseleave", () => {});
-      }
-      
-      ScrollTrigger.getAll().forEach(trigger => trigger.kill());
-    };
-  }, []);
 
-  // Animation for progress update
-  useEffect(() => {
-    if (fileTransfer.status === 'transferring' && progressRef.current) {
-      gsap.to(progressRef.current, {
-        width: `${fileTransfer.progress}%`,
-        duration: 0.3,
-        ease: "power1.out"
-      });
-    }
-  }, [fileTransfer.progress, fileTransfer.status]);
-
-  // Animation for completed transfer
-  useEffect(() => {
-    if (fileTransfer.status === 'complete' && buttonRef.current) {
-      gsap.to(
-        buttonRef.current,
-        { 
-          backgroundColor: "#10B981", 
-          duration: 0.5,
-          ease: "power2.out"
-        }
-      );
-      
-      gsap.to(buttonRef.current, {
-        scale: 1.03,
-        duration: 0.2,
-        yoyo: true,
-        repeat: 1,
-        ease: "back.out(1.5)"
-      });
-    }
-  }, [fileTransfer.status]);
-
-  const generateSessionId = () => {
-    return Math.random().toString(36).substring(2, 10);
-  };
-
-  const setupSocketListeners = (sessionId) => {
-    const socket = socketRef.current;
-    if (!socket) {
-      console.error('Socket not initialized');
-      return;
-    }
-
-    // Create WebRTC session
-    socket.emit('create-session', sessionId);
-
-    socket.on('receiver-joined', () => {
+    socketRef.current.on('receiver-joined', () => {
       console.log('Receiver joined, creating offer');
-      
-      // Animate when receiver joins
       gsap.to(linkRef.current, {
         backgroundColor: "#F0FDF4",
         borderColor: "#86EFAC",
@@ -243,19 +164,49 @@ const WebRTCSender = () => {
         duration: 0.4,
         ease: "power2.out"
       });
-      
-      createOffer();
     });
 
-    socket.on('answer', ({ answer }) => {
+    socketRef.current.on('answer', async ({ answer }) => {
       console.log('Received answer');
-      handleAnswer(answer);
+      try {
+        if (!peerConnectionRef.current) {
+          console.error('No peer connection established');
+          return;
+        }
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log('Remote description set');
+        
+        if (buttonRef.current) {
+          gsap.killTweensOf(buttonRef.current);
+          gsap.to(buttonRef.current, {
+            y: 0,
+            duration: 0.2,
+            ease: "power2.out"
+          });
+        }
+      } catch (error) {
+        console.error('Error handling answer:', error);
+        setError('Failed to process WebRTC answer');
+      }
     });
 
-    socket.on('candidate', ({ candidate }) => {
+    socketRef.current.on('candidate', async ({ candidate }) => {
       console.log('Received ICE candidate');
-      handleCandidate(candidate);
+      try {
+        if (!peerConnectionRef.current) {
+          console.error('No peer connection established');
+          return;
+        }
+        await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log('ICE candidate added');
+      } catch (error) {
+        console.error('Error adding ICE candidate:', error);
+        setError('Failed to add ICE candidate');
+      }
     });
+
+    // Create WebRTC session
+    socketRef.current.emit('create-session', sessionIdRef.current);
   };
 
   const createPeerConnection = () => {
@@ -271,7 +222,8 @@ const WebRTCSender = () => {
     // Setup data channel
     const dataChannel = peerConnection.createDataChannel('fileTransfer', {
       negotiated: true,
-      id: 0
+      id: 0,
+      ordered: true
     });
 
     dataChannel.onopen = () => {
@@ -288,12 +240,14 @@ const WebRTCSender = () => {
       console.log('Data channel closed');
     };
 
-    peerConnection.ondatachannel = (event) => {
-      console.log('Data channel received');
-      const receivedChannel = event.channel;
-      receivedChannel.onopen = () => {
-        console.log('Received data channel opened');
-      };
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        console.log('Sending ICE candidate', event.candidate);
+        socketRef.current.emit('candidate', { 
+          candidate: event.candidate,
+          sessionId: sessionIdRef.current
+        });
+      }
     };
 
     peerConnection.oniceconnectionstatechange = () => {
@@ -311,47 +265,35 @@ const WebRTCSender = () => {
 
   const createOffer = async () => {
     try {
-      // Ensure file is selected
       if (!fileTransfer.file) {
         setError('Please select a file first');
         return;
       }
 
-      // Reset connection if transfer was previously completed
-      if (fileTransfer.status === 'complete') {
-        resetConnection();
-        return;
-      }
-
+      // Initialize fresh session
+      initializeNewSession();
+      
+      // Create new peer connection
       const peerConnection = createPeerConnection();
 
-      peerConnection.onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) {
-          const sessionId = sessionIdRef.current;
-          console.log('Sending ICE candidate', event.candidate);
-          socketRef.current.emit('candidate', { 
-            candidate: event.candidate,
-            sessionId 
-          });
-        }
-      };
-
-      const offer = await peerConnection.createOffer();
+      // Create offer
+      const offer = await peerConnection.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false
+      });
+      
       await peerConnection.setLocalDescription(offer);
 
-      const sessionId = sessionIdRef.current;
       console.log('Sending offer', offer);
       if (socketRef.current) {
         socketRef.current.emit('offer', { 
           offer, 
-          sessionId 
+          sessionId: sessionIdRef.current
         });
       }
 
-      // Update status to preparing transfer
       setFileTransfer(prev => ({ ...prev, status: 'preparing' }));
       
-      // Animate button during preparation
       if (buttonRef.current) {
         gsap.to(buttonRef.current, {
           y: [-2, 2, -2],
@@ -366,48 +308,6 @@ const WebRTCSender = () => {
     }
   };
 
-  const handleAnswer = async (answer) => {
-    try {
-      const peerConnection = peerConnectionRef.current;
-      if (!peerConnection) {
-        console.error('Peer connection not established');
-        return;
-      }
-
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-      console.log('Remote description set');
-      
-      // Stop button animation when answer received
-      if (buttonRef.current) {
-        gsap.killTweensOf(buttonRef.current);
-        gsap.to(buttonRef.current, {
-          y: 0,
-          duration: 0.2,
-          ease: "power2.out"
-        });
-      }
-    } catch (error) {
-      console.error('Error handling answer:', error);
-      setError('Failed to process WebRTC answer');
-    }
-  };
-
-  const handleCandidate = async (candidate) => {
-    try {
-      const peerConnection = peerConnectionRef.current;
-      if (!peerConnection) {
-        console.error('Peer connection not established');
-        return;
-      }
-
-      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-      console.log('ICE candidate added');
-    } catch (error) {
-      console.error('Error adding ICE candidate:', error);
-      setError('Failed to add ICE candidate');
-    }
-  };
-
   const startFileTransfer = () => {
     const { file } = fileTransfer;
     const dataChannel = dataChannelRef.current;
@@ -418,7 +318,6 @@ const WebRTCSender = () => {
       return;
     }
 
-    // Ensure data channel is open
     if (dataChannel.readyState !== 'open') {
       console.error('Data channel is not open. Current state:', dataChannel.readyState);
       setError('Data channel is not ready');
@@ -428,27 +327,23 @@ const WebRTCSender = () => {
     setFileTransfer(prev => ({ ...prev, status: 'transferring' }));
     console.log('Starting file transfer:', file.name);
     
-    // Animate the transition to transfer state
     if (buttonRef.current) {
       gsap.to(buttonRef.current, {
-        backgroundColor: "#EAB308", // Yellow for in-progress
+        backgroundColor: "#EAB308",
         color: "#000000",
         duration: 0.3,
         ease: "power2.out"
       });
     }
     
-    // Prepare file metadata
     const metadata = {
       name: file.name,
       type: file.type,
       size: file.size
     };
 
-    // Send file metadata first
     try {
       console.log('Sending file metadata:', metadata);
-      
       dataChannel.send(JSON.stringify({
         type: 'metadata',
         data: metadata
@@ -459,8 +354,7 @@ const WebRTCSender = () => {
       return;
     }
 
-    // Read and send file in chunks
-    const chunkSize = 16 * 1024; // 16KB chunks
+    const chunkSize = 16 * 1024;
     const reader = new FileReader();
     let offset = 0;
 
@@ -474,7 +368,6 @@ const WebRTCSender = () => {
       if (chunk) {
         try {
           console.log('Sending file chunk:', offset, chunk.byteLength);
-          
           dataChannel.send(JSON.stringify({
             type: 'chunk',
             data: Array.from(new Uint8Array(chunk))
@@ -482,13 +375,11 @@ const WebRTCSender = () => {
 
           offset += chunk.byteLength;
           const progress = Math.round((offset / file.size) * 100);
-          
           setFileTransfer(prev => ({ ...prev, progress }));
 
           if (offset < file.size) {
             readNextChunk();
           } else {
-            // Transfer complete
             dataChannel.send(JSON.stringify({ type: 'end' }));
             setFileTransfer(prev => ({ ...prev, status: 'complete' }));
           }
@@ -510,18 +401,12 @@ const WebRTCSender = () => {
   const handleFileSelect = (event) => {
     const file = event.target.files?.[0];
     if (file) {
-      // If a file transfer was previously completed, reset the connection
-      if (fileTransfer.status === 'complete') {
-        resetConnection();
-      }
-      
       setFileTransfer({
         file,
         status: 'idle',
         progress: 0
       });
       
-      // Animate file details appearing
       if (fileDetailsRef.current) {
         gsap.fromTo(
           fileDetailsRef.current,
@@ -537,7 +422,6 @@ const WebRTCSender = () => {
     navigator.clipboard.writeText(sessionLink);
     setCopied(true);
     
-    // Animate the copy button
     const copyButton = document.querySelector('.copy-button');
     if (copyButton) {
       gsap.to(copyButton, {
@@ -561,7 +445,6 @@ const WebRTCSender = () => {
   };
 
   const removeFile = () => {
-    // Animate file removal
     if (fileDetailsRef.current) {
       gsap.to(fileDetailsRef.current, {
         opacity: 0, 
@@ -594,19 +477,8 @@ const WebRTCSender = () => {
   };
 
   return (
-    <div className="min-h-screen bg-white" ref={containerRef}>
-      {/* Logo in corner */}
-      <div 
-        ref={logoRef}
-        className="fixed top-6 left-6 z-50 cursor-pointer"
-      >
-        <div className="flex items-center space-x-2">
-          <div className="w-7 h-7 rounded-full bg-black flex items-center justify-center">
-            <Send className="w-3.5 h-3.5 text-white transform -rotate-45" />
-          </div>
-          <span className="text-lg font-light tracking-wide">hosty</span>
-        </div>
-      </div>
+    <div className="min-h-screen bg-white justify-center items-center flex" ref={containerRef}>
+      
       
       <div className="container mx-auto px-4 py-24">
         <div className="max-w-md mx-auto space-y-12">
